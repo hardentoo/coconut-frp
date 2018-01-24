@@ -1,0 +1,50 @@
+-- This file has been generated from package.yaml by hpack version 0.20.0.
+--
+-- see: https://github.com/sol/hpack
+--
+-- hash: 781e67ad17f157eb37a1e04cd8cdf09508fcbc6f673a27af98efbdeb4559e5d9
+
+name:           coconut
+version:        0.1.0.0
+description:    Please see the README on Github at <https://github.com/quickdudley/coconut#readme>
+homepage:       https://github.com/quickdudley/coconut#readme
+bug-reports:    https://github.com/quickdudley/coconut/issues
+author:         Jeremy List
+maintainer:     quick.dudley@gmail.com
+copyright:      BSD3
+license:        BSD3
+license-file:   LICENSE
+build-type:     Simple
+cabal-version:  >= 1.10
+
+extra-source-files:
+    ChangeLog.md
+    README.md
+
+source-repository head
+  type: git
+  location: https://github.com/quickdudley/coconut
+
+library
+  hs-source-dirs:
+      src
+  build-depends:
+      base >=4.7 && <5,
+      parallel
+  exposed-modules:
+      FRP.Coconut
+  other-modules:
+      Paths_coconut
+  default-language: Haskell2010
+
+test-suite coconut-test
+  type: exitcode-stdio-1.0
+  main-is: Spec.hs
+  hs-source-dirs:
+      test
+  ghc-options: -threaded -rtsopts -with-rtsopts=-N
+  build-depends:
+      base >=4.7 && <5
+  other-modules:
+      Paths_coconut
+  default-language: Haskell2010
