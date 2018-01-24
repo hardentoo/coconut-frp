@@ -1,9 +1,12 @@
+{-# LANGUAGE RankNTypes #-}
 module FRP.Coconut (
   Dynamic,
   pollDynamic,
   subscribeDynamic,
   collector,
-  mkDynamic
+  mkDynamic,
+  nubDynamic,
+  splitDynamic
  ) where
 
 import Control.Applicative
@@ -157,3 +160,35 @@ nubDynamic (Dynamic r t) = unsafePerformIO $ do
   addTrigger sn update t
   update
   return (Dynamic r t')
+
+splitDynamic :: forall a b c . Functor c =>
+  (forall m t . Monad m => m t -> m (c t)) ->
+  (forall m t . Monad m => c t ->
+    a ->
+    (b -> t -> m ()) ->
+    m ()
+   ) ->
+  Dynamic a ->
+  b ->
+  c (Dynamic b)
+splitDynamic d r s@(Dynamic sr st) i = unsafePerformIO $ do
+  counter <- newMVar 0 :: IO (MVar Int)
+  sn <- newIORef ()
+  ct <- d $ do
+    r' <- newIORef i
+    t' <- newMVar []
+    c <- takeMVar counter
+    _ <- mkWeakIORef r' $ do
+      c0 <- takeMVar counter
+      let c1 = c0 - 1
+      if c1 == 0
+        then dropTrigger sn st
+        else putMVar counter c1
+    return (Dynamic r' t')
+  addTrigger sn (do
+    a <- readIORef sr
+    r ct a $ \b (Dynamic tr tt) -> do
+      writeIORef tr b
+      runTriggers tt
+   ) st
+  return ct
