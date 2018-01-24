@@ -1,9 +1,3 @@
--- This file has been generated from package.yaml by hpack version 0.20.0.
---
--- see: https://github.com/sol/hpack
---
--- hash: 781e67ad17f157eb37a1e04cd8cdf09508fcbc6f673a27af98efbdeb4559e5d9
-
 name:           coconut
 version:        0.1.0.0
 description:    Please see the README on Github at <https://github.com/quickdudley/coconut#readme>
@@ -32,7 +26,8 @@ library
       base >=4.7 && <5,
       parallel
   exposed-modules:
-      FRP.Coconut
+      FRP.Coconut,
+      FRP.Coconut.Core
   other-modules:
       Paths_coconut
   default-language: Haskell2010
