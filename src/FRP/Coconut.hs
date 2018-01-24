@@ -17,6 +17,8 @@ import Control.Concurrent.MVar
 import System.IO.Unsafe
 import System.Mem.Weak
 
+-- | Represents a value which can change: equivalent to both Behavior and
+-- Event as found in some other FRP libraries.
 data Dynamic a = Dynamic (IORef a) (MVar [(IORef (), IO ())])
 
 runTriggers :: MVar [(IORef (), IO ())] -> IO ()
@@ -116,32 +118,43 @@ instance Monad Dynamic where
     update
     return (Dynamic r t)
 
+-- | Get the value currently stored in the 'Dynamic' object.
 pollDynamic :: Dynamic a -> IO a
 pollDynamic ~(Dynamic r _) = readIORef r
 
+-- | Provide a handler which will be run immediately with the current value
+-- in the 'Dynamic', and again every time it updates.
 subscribeDynamic :: Dynamic a -> (a -> IO ()) -> IO (IO ())
 subscribeDynamic d@(Dynamic r t) h = do
   readIORef r >>= h
   subscribeDynamic' d h
 
+-- | Provide a handler which will be run with the new value when the 'Dynamic'
+-- object updates, but not immediately with the current value.
 subscribeDynamic' :: Dynamic a -> (a -> IO ()) -> IO (IO ())
 subscribeDynamic' (Dynamic r t) h = do
   sn <- newIORef ()
   addTrigger sn (readIORef r >>= h) t
   return $ dropTrigger sn t
 
+-- | Produces a 'Dynamic' object containing the provided value, and an
+-- action for updating it.
 collector :: a -> IO (Dynamic a, (a -> a) -> IO ())
 collector a = do
   r <- newIORef a
   t <- newMVar []
   return (Dynamic r t, \f -> modifyIORef r f >> runTriggers t)
 
+-- | Simplified version of 'collector': the action replaces the current value
+-- rather than applying the endofunctor.
 mkDynamic :: a -> IO (Dynamic a, a -> IO ())
 mkDynamic a = do
   r <- newIORef a
   t <- newMVar []
   return (Dynamic r t, \b -> writeIORef r b >> runTriggers t)
 
+-- | Produces a 'Dynamic' object which does not propagate the update signal if
+-- its contents are unchanged.
 nubDynamic :: Eq a => Dynamic a -> Dynamic a
 nubDynamic (Dynamic r t) = unsafePerformIO $ do
   sn <- newIORef ()
@@ -161,20 +174,24 @@ nubDynamic (Dynamic r t) = unsafePerformIO $ do
   update
   return (Dynamic r t')
 
+-- | This is intended for creating a collection of 'Dynamic' objects from a
+-- single one. The first argument is used to populate the collection, the
+-- second argument is used to distribute updates to the collection, the third
+-- argument is the source 'Dynamic' object, and the fourth argument is the
+-- initial value for the collection contents.
 splitDynamic :: forall a b c . Functor c =>
-  (forall m t . Monad m => m t -> m (c t)) ->
+  (forall m t . Monad m => (b -> m t) -> m (c t)) ->
   (forall m t . Monad m => c t ->
     a ->
     (b -> t -> m ()) ->
     m ()
    ) ->
   Dynamic a ->
-  b ->
   c (Dynamic b)
-splitDynamic d r s@(Dynamic sr st) i = unsafePerformIO $ do
+splitDynamic d r s@(Dynamic sr st) = unsafePerformIO $ do
   counter <- newMVar 0 :: IO (MVar Int)
   sn <- newIORef ()
-  ct <- d $ do
+  ct <- d $ \i -> do
     r' <- newIORef i
     t' <- newMVar []
     c <- takeMVar counter
