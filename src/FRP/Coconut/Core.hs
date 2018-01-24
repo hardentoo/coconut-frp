@@ -143,7 +143,9 @@ collector :: a -> IO (Dynamic a, (a -> a) -> IO ())
 collector a = do
   r <- newIORef a
   t <- newMVar []
-  return (Dynamic r t, \f -> modifyIORef r f >> runTriggers t)
+  return (Dynamic r t,
+    \f -> atomicModifyIORef r (\a -> (f a,())) >>=
+    \u -> u `seq` runTriggers t)
 
 -- | Simplified version of 'collector': the action replaces the current value
 -- rather than applying the endofunctor.
