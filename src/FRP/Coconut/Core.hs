@@ -3,8 +3,10 @@ module FRP.Coconut.Core (
   Dynamic,
   pollDynamic,
   subscribeDynamic,
+  subscribeDynamic',
   collector,
   mkDynamic,
+  accumulator,
   nubDynamic,
   splitDynamic,
   hold
@@ -65,6 +67,8 @@ instance Functor Dynamic where
         putMVar r' b
         tr
     addTrigger sn update t
+    putMVar r' (f a0)
+    putMVar r a0
     return $ Dynamic r' t'
 
 instance Applicative Dynamic where
@@ -154,7 +158,8 @@ pollDynamic :: Dynamic a -> IO a
 pollDynamic ~(Dynamic r _) = readMVar r
 
 -- | Provide a handler which will be run immediately with the current value
--- in the 'Dynamic', and again every time it updates.
+-- in the 'Dynamic', and again every time it updates. Returns an IO action
+-- which removes the subscription. Calling it more than once is dangerous.
 subscribeDynamic :: Dynamic a -> (a -> IO ()) -> IO (IO ())
 subscribeDynamic d@(Dynamic r t) h = do
   v <- takeMVar r
@@ -199,6 +204,32 @@ mkDynamic a = do
     tr
    )
 
+-- | Creates a stateful 'Dynamic' object: useful for implementing counters, etc.
+accumulator :: (s -> a -> (s,b)) -> s -> Dynamic a -> IO (Dynamic b)
+accumulator u s0 ~(Dynamic r t) = do
+  a0 <- takeMVar r
+  let (s1, b1) = u s0 a0
+  r' <- newMVar b1
+  t' <- newMVar []
+  sn <- newIORef ()
+  sr <- newMVar s1
+  wt <- mkWeakMVar t' $ do
+    dropTrigger sn t
+  let
+    update a = do
+      _ <- takeMVar r'
+      s2 <- takeMVar sr
+      let (s3,b3) = u s2 a
+      putMVar sr s3
+      tr <- deRefWeak wt >>= \mt -> case mt of
+        Nothing -> return (return ())
+        Just t0 -> getTriggers t0 b3
+      putMVar r' b3
+      tr
+  addTrigger sn update t
+  putMVar r a0
+  return (Dynamic r' t')
+
 -- | Produces a 'Dynamic' object which does not propagate the update signal if
 -- its contents are unchanged.
 nubDynamic :: Eq a => Dynamic a -> Dynamic a
@@ -211,7 +242,7 @@ nubDynamic (Dynamic r t) = unsafePerformIO $ do
   let
     update b = do
       c <- takeMVar r'
-      tr <- if b == c
+      tr <- if b /= c
         then deRefWeak wt >>= \mt -> case mt of
           Nothing -> return (return ())
           Just t0 -> getTriggers t0 b
@@ -219,6 +250,7 @@ nubDynamic (Dynamic r t) = unsafePerformIO $ do
       putMVar r' b
       tr
   addTrigger sn update t
+  putMVar r a
   return (Dynamic r' t')
 
 -- | This is intended for creating a collection of 'Dynamic' objects from a
