@@ -16,6 +16,7 @@ module FRP.Coconut.Core (
 import Control.Applicative
 import Control.Monad
 import Control.Parallel
+import Data.Functor.Identity
 import Data.IORef
 import Control.Concurrent.MVar
 import System.IO.Unsafe
@@ -266,6 +267,7 @@ sink f (Dynamic r t) = Sink r <$> mkWeakMVar t f
 -- second argument is used to distribute updates to the collection, the third
 -- argument is the source 'Dynamic' object, and the fourth argument is the
 -- initial value for the collection contents.
+{-# INLINE splitDynamic #-}
 splitDynamic :: forall a b c . Traversable c =>
   (forall m t . Monad m => a -> (b -> m t) -> m (c t)) ->
   (forall m t . Monad m => c t ->
@@ -275,34 +277,10 @@ splitDynamic :: forall a b c . Traversable c =>
    ) ->
   Dynamic a ->
   c (Dynamic b)
-splitDynamic d r s@(Dynamic sr st) = unsafePerformIO $ do
-  counter <- newMVar 0 :: IO (MVar Int)
-  sn <- newIORef ()
-  a <- takeMVar sr
-  ct <- d a $ \i -> do
-    r' <- newMVar i
-    t' <- newMVar []
-    c <- takeMVar counter
-    _ <- mkWeakMVar t' $ do
-      c1 <- takeMVar counter
-      let c2 = c1 - 1
-      if c2 == 0
-        then dropTrigger sn st
-        else putMVar counter c2
-    putMVar counter (c + 1)
-    return (Dynamic r' t')
-  wct <- traverse (sink $ return ()) ct
-  addTrigger sn (\a ->
-    r wct a $ \b (Sink tr wt) -> do
-      _ <- takeMVar tr
-      tx <- deRefWeak wt >>= \mt -> case mt of
-        Nothing -> return (return ())
-        Just tt -> getTriggers tt b
-      putMVar tr b
-      tx
-   ) st
-  putMVar sr a
-  return ct
+splitDynamic d r s = openAContainer (scatter (\a n -> AContainer <$>
+  d a n
+ ) (\(AContainer l) a u -> r l a u
+ ) s)
 
 scatter :: forall a c s . Assortment c =>
   (forall t m . Monad m =>
