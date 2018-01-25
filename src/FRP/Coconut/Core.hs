@@ -9,6 +9,7 @@ module FRP.Coconut.Core (
   accumulator,
   nubDynamic,
   splitDynamic,
+  scatter,
   hold
  ) where
 
@@ -20,6 +21,8 @@ import Control.Concurrent.MVar
 import System.IO.Unsafe
 import System.Mem.Weak
 import Foreign.StablePtr
+
+import Data.Assortment
 
 -- | Represents a value which can change: equivalent to both Behavior and
 -- Event as found in some other FRP libraries.
@@ -164,8 +167,8 @@ subscribeDynamic :: Dynamic a -> (a -> IO ()) -> IO (IO ())
 subscribeDynamic d@(Dynamic r t) h = do
   v <- takeMVar r
   u <- subscribeDynamic' d h
-  h v
   putMVar r v
+  h v
   return u
 
 -- | Provide a handler which will be run with the new value when the 'Dynamic'
@@ -253,12 +256,17 @@ nubDynamic (Dynamic r t) = unsafePerformIO $ do
   putMVar r a
   return (Dynamic r' t')
 
+data Sink a = Sink (MVar a) (Weak (MVar [(IORef (), a -> IO ())]))
+
+sink :: IO () -> Dynamic a -> IO (Sink a)
+sink f (Dynamic r t) = Sink r <$> mkWeakMVar t f
+
 -- | This is intended for creating a collection of 'Dynamic' objects from a
 -- single one. The first argument is used to populate the collection, the
 -- second argument is used to distribute updates to the collection, the third
 -- argument is the source 'Dynamic' object, and the fourth argument is the
 -- initial value for the collection contents.
-splitDynamic :: forall a b c . Functor c =>
+splitDynamic :: forall a b c . Traversable c =>
   (forall m t . Monad m => a -> (b -> m t) -> m (c t)) ->
   (forall m t . Monad m => c t ->
     a ->
@@ -276,21 +284,67 @@ splitDynamic d r s@(Dynamic sr st) = unsafePerformIO $ do
     t' <- newMVar []
     c <- takeMVar counter
     _ <- mkWeakMVar t' $ do
-      c0 <- takeMVar counter
-      let c1 = c0 - 1
-      if c1 == 0
+      c1 <- takeMVar counter
+      let c2 = c1 - 1
+      if c2 == 0
         then dropTrigger sn st
-        else putMVar counter c1
+        else putMVar counter c2
+    putMVar counter (c + 1)
     return (Dynamic r' t')
-  addTrigger sn (\a -> do
-    r ct a $ \b (Dynamic tr tt) -> do
+  wct <- traverse (sink $ return ()) ct
+  addTrigger sn (\a ->
+    r wct a $ \b (Sink tr wt) -> do
       _ <- takeMVar tr
-      tx <- getTriggers tt b
+      tx <- deRefWeak wt >>= \mt -> case mt of
+        Nothing -> return (return ())
+        Just tt -> getTriggers tt b
       putMVar tr b
       tx
    ) st
   putMVar sr a
   return ct
+
+scatter :: forall a c s . Assortment c =>
+  (forall t m . Monad m =>
+    a ->
+    (forall b . b -> m (t b)) ->
+    m (c t)
+   ) ->
+  (forall t m . Monad m =>
+    c t ->
+    a ->
+    (forall b . b -> t b -> m ()) ->
+    m ()
+   ) ->
+  Dynamic a ->
+  c Dynamic
+scatter c u (Dynamic r t) = unsafePerformIO $ do
+  a <- takeMVar r
+  counter <- newMVar 0
+  sn <- newIORef ()
+  x <- c a $ \b -> do
+    r' <- newMVar b
+    t' <- newMVar []
+    cv <- takeMVar counter
+    putMVar counter (cv + 1)
+    _ <- mkWeakMVar t' $ do
+      cv' <- takeMVar counter
+      let cv1 = cv' - 1
+      if cv1 == 0
+        then dropTrigger sn t
+        else putMVar counter cv1
+    return (Dynamic r' t')
+  y <- cmapM (sink $ return ()) x
+  addTrigger sn (\a' -> u y a' $ \b (Sink r' wt) -> do
+    _ <- takeMVar r'
+    tx <- deRefWeak wt >>= \mt -> case mt of
+      Nothing -> return (return ())
+      Just tt -> getTriggers tt b
+    putMVar r' b
+    tx
+   ) t
+  putMVar r a
+  return x
 
 -- | Create a new 'Dynamic' object containing the current value of the argument,
 -- and an 'IO' action. The new 'Dynamic' object will retain its current value,
