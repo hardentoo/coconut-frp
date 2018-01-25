@@ -21,12 +21,12 @@ import Foreign.StablePtr
 
 -- | Represents a value which can change: equivalent to both Behavior and
 -- Event as found in some other FRP libraries.
-data Dynamic a = Dynamic (IORef a) (MVar [(IORef (), a -> IO ())])
+data Dynamic a = Dynamic (MVar a) (MVar [(IORef (), a -> IO ())])
 
-runTriggers :: MVar [(IORef (), a -> IO ())] -> a -> IO ()
-runTriggers v x = do
+getTriggers :: MVar [(IORef (), a -> IO ())] -> a -> IO (IO ())
+getTriggers v x = do
   l <- readMVar v
-  forM_ l $ \(_, a) -> a x
+  return $ forM_ l $ \(_, a) -> a x
 
 initialRef :: IO (IORef a)
 initialRef = newIORef (error "Tried to use dynamic variable before it was \
@@ -50,98 +50,118 @@ addTrigger sn u t = do
 
 instance Functor Dynamic where
   fmap f (Dynamic r t) = unsafePerformIO $ do
-    r' <- readIORef r >>= (newIORef . f)
+    a0 <- takeMVar r
+    r' <- newEmptyMVar
     t' <- newMVar []
     sn <- newIORef ()
     wt <- mkWeakMVar t' $ dropTrigger sn t
     let
       update a = do
         let b = f a
-        writeIORef r' b
-        deRefWeak wt >>= \mt -> case mt of
-          Nothing -> return ()
-          Just t0 -> runTriggers t0 b
+        _ <- takeMVar r'
+        tr <- deRefWeak wt >>= \mt -> case mt of
+          Nothing -> return (return ())
+          Just t0 -> getTriggers t0 b
+        putMVar r' b
+        tr
     addTrigger sn update t
     return $ Dynamic r' t'
 
 instance Applicative Dynamic where
   pure a = unsafePerformIO $ do
-    r <- newIORef a
+    r <- newMVar a
     t <- newMVar []
     return (Dynamic r t)
   Dynamic rf tf <*> Dynamic ra ta = unsafePerformIO $ do
-    r <- (readIORef rf <*> readIORef ra) >>= newIORef
+    f0 <- takeMVar rf
+    a0 <- takeMVar ra
+    fl <- newMVar f0
+    al <- newMVar a0
+    r <- newMVar (f0 a0)
     t <- newMVar []
     sn <- newIORef ()
     wt <- mkWeakMVar t $ dropTrigger sn tf >> dropTrigger sn ta
-    crf <- readIORef rf >>= newMVar
-    cra <- readIORef ra >>= newMVar
     let
-      updateF f = do
-        _ <- takeMVar crf
-        a <- readMVar cra
+      update f a = do
         let b = f a
-        putMVar crf f
-        writeIORef r b
-        deRefWeak wt >>= \mt -> case mt of
-          Nothing -> return ()
-          Just t0 -> runTriggers t0 b
+        _ <- takeMVar r
+        tr <- deRefWeak wt >>= \mt -> case mt of
+          Nothing -> return (return ())
+          Just t' -> getTriggers t' b
+        putMVar r b
+        putMVar al a
+        putMVar fl f
+        tr
       updateA a = do
-        f <- takeMVar crf
-        _ <- takeMVar cra
-        let b = f a
-        putMVar cra a
-        putMVar crf f
-        writeIORef r b
-        deRefWeak wt >>= \mt -> case mt of
-          Nothing -> return ()
-          Just t0 -> runTriggers t0 b
+        f <- takeMVar fl
+        _ <- takeMVar al
+        update f a
+      updateF f = do
+        _ <- takeMVar fl
+        a <- takeMVar al
+        update f a
     addTrigger sn updateF tf
     addTrigger sn updateA ta
+    putMVar ra a0
+    putMVar rf f0
     return (Dynamic r t)
 
 instance Monad Dynamic where
   return = pure
   Dynamic ra ta >>= f = unsafePerformIO $ do
+    r <- newEmptyMVar
     t <- newMVar []
     sn <- newIORef ()
-    b0@(Dynamic b0r b0t) <- f <$> readIORef ra
+    a0 <- takeMVar ra
+    let b0@(Dynamic rb0 tb0) = f a0
     bb <- newMVar b0
     wt <- mkWeakMVar t $ do
-      mb <- tryTakeMVar bb
-      case mb of
+      tryTakeMVar bb >>= \mb -> case mb of
         Nothing -> return ()
         Just (Dynamic _ tb) -> dropTrigger sn tb
       dropTrigger sn ta
-    r <- readIORef b0r >>= newIORef
     let
       update1 a = do
-        let b@(Dynamic br bt) = f a
-        Dynamic _ bt1 <- takeMVar bb
-        v <- readIORef br
-        putMVar bb b
-        dropTrigger sn bt1
-        update2 v
-        addTrigger sn update2 bt
+        Dynamic _ tb0 <- takeMVar bb
+        dropTrigger sn tb0
+        let bn@(Dynamic bnr bnt) = f a
+        b <- takeMVar bnr
+        _ <- takeMVar r
+        addTrigger sn update2 bnt
+        putMVar bnr b
+        tr <- deRefWeak wt >>= \mt -> case mt of
+          Nothing -> return (return ())
+          Just t0 -> getTriggers t0 b
+        putMVar r b
+        tr
       update2 b = do
-        writeIORef r b
-        deRefWeak wt >>= \mt -> case mt of
-          Nothing -> return ()
-          Just t' -> runTriggers t' b
-    addTrigger sn update2 b0t
+        _ <- takeMVar r
+        tr <- deRefWeak wt >>= \mt -> case mt of
+          Nothing -> return (return ())
+          Just t0 -> getTriggers t0 b
+        putMVar r b
+        tr    
+    b0v <- takeMVar rb0
+    addTrigger sn update2 tb0
     addTrigger sn update1 ta
+    putMVar r b0v
+    putMVar rb0 b0v
+    putMVar ra a0
     return (Dynamic r t)
 
 -- | Get the value currently stored in the 'Dynamic' object.
 pollDynamic :: Dynamic a -> IO a
-pollDynamic ~(Dynamic r _) = readIORef r
+pollDynamic ~(Dynamic r _) = readMVar r
 
 -- | Provide a handler which will be run immediately with the current value
 -- in the 'Dynamic', and again every time it updates.
 subscribeDynamic :: Dynamic a -> (a -> IO ()) -> IO (IO ())
 subscribeDynamic d@(Dynamic r t) h = do
-  readIORef r >>= h
-  subscribeDynamic' d h
+  v <- takeMVar r
+  u <- subscribeDynamic' d h
+  h v
+  putMVar r v
+  return u
 
 -- | Provide a handler which will be run with the new value when the 'Dynamic'
 -- object updates, but not immediately with the current value.
@@ -156,38 +176,48 @@ subscribeDynamic' (Dynamic r t) h = do
 -- action for updating it.
 collector :: a -> IO (Dynamic a, (a -> a) -> IO ())
 collector a = do
-  r <- newIORef a
+  r <- newMVar a
   t <- newMVar []
-  return (Dynamic r t,
-    \f -> atomicModifyIORef r (\a -> let b = f a in (b, b)) >>= runTriggers t)
+  return (Dynamic r t, \f -> do
+    a' <- takeMVar r
+    let b = f a'
+    tr <- getTriggers t b
+    putMVar r b
+    tr
+   )
 
 -- | Simplified version of 'collector': the action replaces the current value
 -- rather than applying the endofunctor.
 mkDynamic :: a -> IO (Dynamic a, a -> IO ())
 mkDynamic a = do
-  r <- newIORef a
+  r <- newMVar a
   t <- newMVar []
-  return (Dynamic r t, \b -> writeIORef r b >> runTriggers t b)
+  return (Dynamic r t, \b -> do
+    _ <- takeMVar r
+    tr <- getTriggers t b
+    putMVar r b
+    tr
+   )
 
 -- | Produces a 'Dynamic' object which does not propagate the update signal if
 -- its contents are unchanged.
 nubDynamic :: Eq a => Dynamic a -> Dynamic a
 nubDynamic (Dynamic r t) = unsafePerformIO $ do
-  a <- readIORef r
-  r' <- newIORef a
-  c <- newMVar a
+  a <- takeMVar r
+  r' <- newMVar a
   t' <- newMVar []
   sn <- newIORef ()
-  tw <- mkWeakMVar t' $ dropTrigger sn t
+  wt <- mkWeakMVar t' $ dropTrigger sn t
   let
     update b = do
-      a' <- takeMVar c
-      putMVar c b
-      when (a' /= b) $ do
-        writeIORef r' b
-        deRefWeak tw >>= \mt -> case mt of
-          Nothing -> return ()
-          Just t0 -> runTriggers t0 b
+      c <- takeMVar r'
+      tr <- if b == c
+        then deRefWeak wt >>= \mt -> case mt of
+          Nothing -> return (return ())
+          Just t0 -> getTriggers t0 b
+        else return (return ())
+      putMVar r' b
+      tr
   addTrigger sn update t
   return (Dynamic r' t')
 
@@ -208,12 +238,12 @@ splitDynamic :: forall a b c . Functor c =>
 splitDynamic d r s@(Dynamic sr st) = unsafePerformIO $ do
   counter <- newMVar 0 :: IO (MVar Int)
   sn <- newIORef ()
-  a <- readIORef sr
+  a <- takeMVar sr
   ct <- d a $ \i -> do
-    r' <- newIORef i
+    r' <- newMVar i
     t' <- newMVar []
     c <- takeMVar counter
-    _ <- mkWeakIORef r' $ do
+    _ <- mkWeakMVar t' $ do
       c0 <- takeMVar counter
       let c1 = c0 - 1
       if c1 == 0
@@ -222,17 +252,28 @@ splitDynamic d r s@(Dynamic sr st) = unsafePerformIO $ do
     return (Dynamic r' t')
   addTrigger sn (\a -> do
     r ct a $ \b (Dynamic tr tt) -> do
-      writeIORef tr b
-      runTriggers tt b
+      _ <- takeMVar tr
+      tx <- getTriggers tt b
+      putMVar tr b
+      tx
    ) st
+  putMVar sr a
   return ct
 
 -- | Create a new 'Dynamic' object containing the current value of the argument,
 -- and an 'IO' action. The new 'Dynamic' object will retain its current value,
 -- but will update it whenever the accompanying 'IO' action is run.
 hold :: Dynamic a -> IO (Dynamic a, IO ())
-hold (Dynamic r _) = do
-  r' <- readIORef r >>= newIORef
-  t <- newMVar []
-  return (Dynamic r' t,
-    readIORef r >>= \v -> writeIORef r' v >> runTriggers t v)
+hold (Dynamic r t) = do
+  a <- takeMVar r
+  r' <- newMVar a
+  t' <- newMVar []
+  sp <- newStablePtr t
+  _ <- mkWeakMVar t' $ freeStablePtr sp
+  putMVar r a
+  return (Dynamic r' t', do
+    a <- takeMVar r
+    tr <- getTriggers t' a
+    putMVar r a
+    tr
+   )
