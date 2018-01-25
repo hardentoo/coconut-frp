@@ -6,7 +6,8 @@ module FRP.Coconut.Core (
   collector,
   mkDynamic,
   nubDynamic,
-  splitDynamic
+  splitDynamic,
+  hold
  ) where
 
 import Control.Applicative
@@ -16,22 +17,23 @@ import Data.IORef
 import Control.Concurrent.MVar
 import System.IO.Unsafe
 import System.Mem.Weak
+import Foreign.StablePtr
 
 -- | Represents a value which can change: equivalent to both Behavior and
 -- Event as found in some other FRP libraries.
-data Dynamic a = Dynamic (IORef a) (MVar [(IORef (), IO ())])
+data Dynamic a = Dynamic (IORef a) (MVar [(IORef (), a -> IO ())])
 
-runTriggers :: MVar [(IORef (), IO ())] -> IO ()
-runTriggers v = do
+runTriggers :: MVar [(IORef (), a -> IO ())] -> a -> IO ()
+runTriggers v x = do
   l <- readMVar v
-  forM_ l $ \(_, a) -> a
+  forM_ l $ \(_, a) -> a x
 
 initialRef :: IO (IORef a)
 initialRef = newIORef (error "Tried to use dynamic variable before it was \
   \initialized.")
 
 dropTrigger :: IORef () ->
-  MVar [(IORef (), IO ())] ->
+  MVar [(IORef (), a -> IO ())] ->
   IO ()
 dropTrigger sn t = do
   l <- takeMVar t
@@ -39,8 +41,8 @@ dropTrigger sn t = do
   putMVar t $ l'
   foldr (flip const) () l `par` return ()
 
-addTrigger :: IORef () -> IO () ->
-  MVar [(IORef (), IO ())] ->
+addTrigger :: IORef () -> (a -> IO ()) ->
+  MVar [(IORef (), a -> IO ())] ->
   IO ()
 addTrigger sn u t = do
   l <- takeMVar t
@@ -48,19 +50,18 @@ addTrigger sn u t = do
 
 instance Functor Dynamic where
   fmap f (Dynamic r t) = unsafePerformIO $ do
-    r' <- initialRef
+    r' <- readIORef r >>= (newIORef . f)
     t' <- newMVar []
     sn <- newIORef ()
-    wr <- mkWeakIORef r' $ dropTrigger sn t
+    wt <- mkWeakMVar t' $ dropTrigger sn t
     let
-      update = deRefWeak wr >>= \mr -> case mr of
-        Nothing -> return ()
-        Just r1 -> do
-          a <- readIORef r
-          writeIORef r1 (f a)
-          runTriggers t'
+      update a = do
+        let b = f a
+        writeIORef r' b
+        deRefWeak wt >>= \mt -> case mt of
+          Nothing -> return ()
+          Just t0 -> runTriggers t0 b
     addTrigger sn update t
-    update
     return $ Dynamic r' t'
 
 instance Applicative Dynamic where
@@ -69,53 +70,66 @@ instance Applicative Dynamic where
     t <- newMVar []
     return (Dynamic r t)
   Dynamic rf tf <*> Dynamic ra ta = unsafePerformIO $ do
-    r <- initialRef
+    r <- (readIORef rf <*> readIORef ra) >>= newIORef
     t <- newMVar []
     sn <- newIORef ()
-    wr <- mkWeakIORef r $ dropTrigger sn tf >> dropTrigger sn ta
+    wt <- mkWeakMVar t $ dropTrigger sn tf >> dropTrigger sn ta
+    crf <- readIORef rf >>= newMVar
+    cra <- readIORef ra >>= newMVar
     let
-      update = deRefWeak wr >>= \mr -> case mr of
-        Nothing -> return ()
-        Just r1 -> do
-          f <- readIORef rf
-          a <- readIORef ra
-          writeIORef r1 (f a)
-          runTriggers t
-    addTrigger sn update tf
-    addTrigger sn update ta
-    update
+      updateF f = do
+        _ <- takeMVar crf
+        a <- readMVar cra
+        let b = f a
+        putMVar crf f
+        writeIORef r b
+        deRefWeak wt >>= \mt -> case mt of
+          Nothing -> return ()
+          Just t0 -> runTriggers t0 b
+      updateA a = do
+        f <- takeMVar crf
+        _ <- takeMVar cra
+        let b = f a
+        putMVar cra a
+        putMVar crf f
+        writeIORef r b
+        deRefWeak wt >>= \mt -> case mt of
+          Nothing -> return ()
+          Just t0 -> runTriggers t0 b
+    addTrigger sn updateF tf
+    addTrigger sn updateA ta
     return (Dynamic r t)
 
 instance Monad Dynamic where
   return = pure
   Dynamic ra ta >>= f = unsafePerformIO $ do
-    r <- initialRef
     t <- newMVar []
     sn <- newIORef ()
-    bb <- newEmptyMVar
-    wr <- mkWeakIORef r $ do
+    b0@(Dynamic b0r b0t) <- f <$> readIORef ra
+    bb <- newMVar b0
+    wt <- mkWeakMVar t $ do
+      mb <- tryTakeMVar bb
+      case mb of
+        Nothing -> return ()
+        Just (Dynamic _ tb) -> dropTrigger sn tb
       dropTrigger sn ta
-      ~(Dynamic _ tb) <- takeMVar bb
-      dropTrigger sn tb
+    r <- readIORef b0r >>= newIORef
     let
-      update = do
-        tryTakeMVar bb >>= \b -> case b of
-          Just ~(Dynamic _ tb) -> dropTrigger sn tb
+      update1 a = do
+        let b@(Dynamic br bt) = f a
+        Dynamic _ bt1 <- takeMVar bb
+        v <- readIORef br
+        putMVar bb b
+        dropTrigger sn bt1
+        update2 v
+        addTrigger sn update2 bt
+      update2 b = do
+        writeIORef r b
+        deRefWeak wt >>= \mt -> case mt of
           Nothing -> return ()
-        a <- readIORef ra
-        let db@(Dynamic rb tb) = f a
-        putMVar bb db
-        let
-          update2 = deRefWeak wr >>= \mr -> case mr of
-            Nothing -> return ()
-            Just r0 -> do
-              b <- readIORef rb
-              writeIORef r0 b
-              runTriggers t
-        addTrigger sn update2 tb
-        update2
-    addTrigger sn update ta
-    update
+          Just t' -> runTriggers t' b
+    addTrigger sn update2 b0t
+    addTrigger sn update1 ta
     return (Dynamic r t)
 
 -- | Get the value currently stored in the 'Dynamic' object.
@@ -134,8 +148,9 @@ subscribeDynamic d@(Dynamic r t) h = do
 subscribeDynamic' :: Dynamic a -> (a -> IO ()) -> IO (IO ())
 subscribeDynamic' (Dynamic r t) h = do
   sn <- newIORef ()
-  addTrigger sn (readIORef r >>= h) t
-  return $ dropTrigger sn t
+  sp <- newStablePtr t
+  addTrigger sn h t
+  return $ dropTrigger sn t >> freeStablePtr sp
 
 -- | Produces a 'Dynamic' object containing the provided value, and an
 -- action for updating it.
@@ -144,8 +159,7 @@ collector a = do
   r <- newIORef a
   t <- newMVar []
   return (Dynamic r t,
-    \f -> atomicModifyIORef r (\a -> (f a,())) >>=
-    \u -> u `seq` runTriggers t)
+    \f -> atomicModifyIORef r (\a -> let b = f a in (b, b)) >>= runTriggers t)
 
 -- | Simplified version of 'collector': the action replaces the current value
 -- rather than applying the endofunctor.
@@ -153,28 +167,29 @@ mkDynamic :: a -> IO (Dynamic a, a -> IO ())
 mkDynamic a = do
   r <- newIORef a
   t <- newMVar []
-  return (Dynamic r t, \b -> writeIORef r b >> runTriggers t)
+  return (Dynamic r t, \b -> writeIORef r b >> runTriggers t b)
 
 -- | Produces a 'Dynamic' object which does not propagate the update signal if
 -- its contents are unchanged.
 nubDynamic :: Eq a => Dynamic a -> Dynamic a
 nubDynamic (Dynamic r t) = unsafePerformIO $ do
-  sn <- newIORef ()
-  wr <- mkWeakIORef r $ dropTrigger sn t
-  t' <- newMVar []
   a <- readIORef r
+  r' <- newIORef a
   c <- newMVar a
+  t' <- newMVar []
+  sn <- newIORef ()
+  tw <- mkWeakMVar t' $ dropTrigger sn t
   let
-    update = deRefWeak wr >>= \mr -> case mr of
-      Nothing -> return ()
-      Just r0 -> do
-        a1 <- readIORef r0
-        a2 <- takeMVar c
-        putMVar c a1
-        when (a1 == a2) (runTriggers t')
+    update b = do
+      a' <- takeMVar c
+      putMVar c b
+      when (a' /= b) $ do
+        writeIORef r' b
+        deRefWeak tw >>= \mt -> case mt of
+          Nothing -> return ()
+          Just t0 -> runTriggers t0 b
   addTrigger sn update t
-  update
-  return (Dynamic r t')
+  return (Dynamic r' t')
 
 -- | This is intended for creating a collection of 'Dynamic' objects from a
 -- single one. The first argument is used to populate the collection, the
@@ -205,10 +220,19 @@ splitDynamic d r s@(Dynamic sr st) = unsafePerformIO $ do
         then dropTrigger sn st
         else putMVar counter c1
     return (Dynamic r' t')
-  addTrigger sn (do
-    a <- readIORef sr
+  addTrigger sn (\a -> do
     r ct a $ \b (Dynamic tr tt) -> do
       writeIORef tr b
-      runTriggers tt
+      runTriggers tt b
    ) st
   return ct
+
+-- | Create a new 'Dynamic' object containing the current value of the argument,
+-- and an 'IO' action. The new 'Dynamic' object will retain its current value,
+-- but will update it whenever the accompanying 'IO' action is run.
+hold :: Dynamic a -> IO (Dynamic a, IO ())
+hold (Dynamic r _) = do
+  r' <- readIORef r >>= newIORef
+  t <- newMVar []
+  return (Dynamic r' t,
+    readIORef r >>= \v -> writeIORef r' v >> runTriggers t v)
