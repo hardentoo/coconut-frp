@@ -344,7 +344,7 @@ hold (Dynamic r t) = do
     tr
    )
 
-merge :: (a -> b -> c) -> (a -> c -> c) -> (b -> c -> c) ->
+merge :: (a -> b -> c) -> (a -> c -> Maybe c) -> (b -> c -> Maybe c) ->
   Dynamic a -> Dynamic b ->
   Dynamic c
 merge im ua ub (Dynamic ar at) (Dynamic br bt) = unsafePerformIO $ do
@@ -356,21 +356,25 @@ merge im ua ub (Dynamic ar at) (Dynamic br bt) = unsafePerformIO $ do
   wt <- mkWeakMVar t $ dropTrigger sn at >> dropTrigger sn bt
   addTrigger sn (\a -> do
     c1 <- takeMVar r
-    let c2 = ua a c1
-    tr <- deRefWeak wt >>= \mt -> case mt of
-      Nothing -> return (return ())
-      Just t0 -> getTriggers t0 c2
-    putMVar r c2
-    tr
+    case ua a c1 of
+      Nothing -> putMVar r c1
+      Just c2 -> do
+        tr <- deRefWeak wt >>= \mt -> case mt of
+          Nothing -> return (return ())
+          Just t0 -> getTriggers t0 c2
+        putMVar r c2
+        tr
    ) at
   addTrigger sn (\b -> do
     c1 <- takeMVar r
-    let c2 = ub b c1
-    tr <- deRefWeak wt >>= \mt -> case mt of
-      Nothing -> return (return ())
-      Just t0 -> getTriggers t0 c2
-    putMVar r c2
-    tr
+    case ub b c1 of
+      Nothing -> putMVar r c1
+      Just c2 -> do
+        tr <- deRefWeak wt >>= \mt -> case mt of
+          Nothing -> return (return ())
+          Just t0 -> getTriggers t0 c2
+        putMVar r c2
+        tr
    ) bt
   putMVar ar a0
   putMVar br b0
