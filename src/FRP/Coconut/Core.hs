@@ -10,7 +10,8 @@ module FRP.Coconut.Core (
   nubDynamic,
   splitDynamic,
   scatter,
-  hold
+  hold,
+  merge
  ) where
 
 import Control.Applicative
@@ -342,3 +343,35 @@ hold (Dynamic r t) = do
     putMVar r a
     tr
    )
+
+merge :: (a -> b -> c) -> (a -> c -> c) -> (b -> c -> c) ->
+  Dynamic a -> Dynamic b ->
+  Dynamic c
+merge im ua ub (Dynamic ar at) (Dynamic br bt) = unsafePerformIO $ do
+  a0 <- takeMVar ar
+  b0 <- takeMVar br
+  r <- newMVar (im a0 b0)
+  t <- newMVar []
+  sn <- newIORef ()
+  wt <- mkWeakMVar t $ dropTrigger sn at >> dropTrigger sn bt
+  addTrigger sn (\a -> do
+    c1 <- takeMVar r
+    let c2 = ua a c1
+    tr <- deRefWeak wt >>= \mt -> case mt of
+      Nothing -> return (return ())
+      Just t0 -> getTriggers t0 c2
+    putMVar r c2
+    tr
+   ) at
+  addTrigger sn (\b -> do
+    c1 <- takeMVar r
+    let c2 = ub b c1
+    tr <- deRefWeak wt >>= \mt -> case mt of
+      Nothing -> return (return ())
+      Just t0 -> getTriggers t0 c2
+    putMVar r c2
+    tr
+   ) bt
+  putMVar ar a0
+  putMVar br b0
+  return (Dynamic r t)
