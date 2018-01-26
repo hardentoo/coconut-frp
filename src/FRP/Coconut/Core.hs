@@ -272,7 +272,7 @@ splitDynamic :: forall a b c . Traversable c =>
   (forall m t . Monad m => a -> (b -> m t) -> m (c t)) ->
   (forall m t . Monad m => c t ->
     a ->
-    (b -> t -> m ()) ->
+    ((b -> b) -> t -> m ()) ->
     m ()
    ) ->
   Dynamic a ->
@@ -291,7 +291,7 @@ scatter :: forall a c s . Assortment c =>
   (forall t m . Monad m =>
     c t ->
     a ->
-    (forall b . b -> t b -> m ()) ->
+    (forall b . (b -> b) -> t b -> m ()) ->
     m ()
    ) ->
   Dynamic a ->
@@ -313,8 +313,9 @@ scatter c u (Dynamic r t) = unsafePerformIO $ do
         else putMVar counter cv1
     return (Dynamic r' t')
   y <- cmapM (sink $ return ()) x
-  addTrigger sn (\a' -> u y a' $ \b (Sink r' wt) -> do
-    _ <- takeMVar r'
+  addTrigger sn (\a' -> u y a' $ \bf (Sink r' wt) -> do
+    b0 <- takeMVar r'
+    let b = bf b0
     tx <- deRefWeak wt >>= \mt -> case mt of
       Nothing -> return (return ())
       Just tt -> getTriggers tt b
