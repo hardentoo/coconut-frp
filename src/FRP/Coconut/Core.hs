@@ -277,8 +277,8 @@ splitDynamic :: forall a b c . Traversable c =>
     m ()
    ) ->
   Dynamic a ->
-  c (Dynamic b)
-splitDynamic d r s = openAContainer (scatter (\a n -> AContainer <$>
+  IO (c (Dynamic b))
+splitDynamic d r s = openAContainer <$> (scatter (\a n -> AContainer <$>
   d a n
  ) (\(AContainer l) a u -> r l a u
  ) s)
@@ -296,8 +296,8 @@ scatter :: forall a c s . Assortment c =>
     m ()
    ) ->
   Dynamic a ->
-  c Dynamic
-scatter c u (Dynamic r t) = unsafePerformIO $ do
+  IO (c Dynamic)
+scatter c u (Dynamic r t) = do
   a <- takeMVar r
   counter <- newMVar 0
   sn <- newIORef ()
