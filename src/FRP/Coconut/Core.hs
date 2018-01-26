@@ -346,8 +346,8 @@ hold (Dynamic r t) = do
 
 merge :: (a -> b -> c) -> (a -> c -> Maybe c) -> (b -> c -> Maybe c) ->
   Dynamic a -> Dynamic b ->
-  Dynamic c
-merge im ua ub (Dynamic ar at) (Dynamic br bt) = unsafePerformIO $ do
+  IO (Dynamic c)
+merge im ua ub (Dynamic ar at) (Dynamic br bt) = do
   a0 <- takeMVar ar
   b0 <- takeMVar br
   r <- newMVar (im a0 b0)
