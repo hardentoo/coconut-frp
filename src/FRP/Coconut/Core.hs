@@ -24,10 +24,12 @@ import System.IO.Unsafe
 import System.Mem.Weak
 import Foreign.StablePtr
 
-import Data.Assortment
+import qualified Rank2
 
--- | Represents a value which can change: equivalent to both Behavior and
--- Event as found in some other FRP libraries.
+-- | Represents a value which can change. Can be thought of as a division of
+-- infinite time into a series of discrete blocks: each of which is associated
+-- with a value. There is always a detectable update event between these blocks
+-- of time: whether or not the stored value has changed.
 data Dynamic a = Dynamic (MVar a) (MVar [(IORef (), a -> IO ())])
 
 getTriggers :: MVar [(IORef (), a -> IO ())] -> a -> IO (IO ())
@@ -278,12 +280,13 @@ splitDynamic :: forall a b c . Traversable c =>
    ) ->
   Dynamic a ->
   IO (c (Dynamic b))
-splitDynamic d r s = openAContainer <$> (scatter (\a n -> AContainer <$>
-  d a n
- ) (\(AContainer l) a u -> r l a u
- ) s)
+splitDynamic d r s = (\(Rank2.Flip c) -> c) <$> scatter (\a n ->
+  Rank2.Flip <$> d a n
+ ) (\(Rank2.Flip c) a u ->
+  r c a u
+ ) s
 
-scatter :: forall a c s . Assortment c =>
+scatter :: forall a c s . Rank2.Traversable c =>
   (forall t m . Monad m =>
     a ->
     (forall b . b -> m (t b)) ->
@@ -313,7 +316,7 @@ scatter c u (Dynamic r t) = do
         then dropTrigger sn t
         else putMVar counter cv1
     return (Dynamic r' t')
-  y <- cmapM (sink $ return ()) x
+  y <- Rank2.traverse (sink $ return ()) x
   addTrigger sn (\a' -> u y a' $ \bf (Sink r' wt) -> do
     b0 <- takeMVar r'
     let b = bf b0

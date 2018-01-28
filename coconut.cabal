@@ -24,12 +24,11 @@ library
       src
   build-depends:
       base >=4.7 && <5,
-      parallel
+      parallel,
+      rank2classes
   exposed-modules:
       FRP.Coconut,
-      FRP.Coconut.Core,
-      Data.Assortment,
-      Data.Assortment.Class
+      FRP.Coconut.Core
   other-modules:
       Paths_coconut
   default-language: Haskell2010
