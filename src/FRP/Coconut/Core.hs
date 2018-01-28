@@ -5,7 +5,9 @@ module FRP.Coconut.Core (
   subscribeDynamic,
   subscribeDynamic',
   collector,
+  collectorWithFinalizer,
   mkDynamic,
+  mkDynamicWithFinalizer,
   accumulator,
   nubDynamic,
   splitDynamic,
@@ -198,6 +200,21 @@ collector a = do
     tr
    )
 
+collectorWithFinalizer :: a -> IO () -> IO (Dynamic a, (a -> a) -> IO ())
+collectorWithFinalizer a f = do
+  r <- newMVar a
+  t <- newMVar []
+  wt <- mkWeakMVar t f
+  return (Dynamic r t, \u -> do
+    a' <- takeMVar r
+    let b = u a
+    tr <- deRefWeak wt >>= \mt -> case mt of
+      Nothing -> return (return ())
+      Just t' -> getTriggers t' b
+    putMVar r b
+    tr
+   )
+
 -- | Simplified version of 'collector': the action replaces the current value
 -- rather than applying the endofunctor.
 mkDynamic :: a -> IO (Dynamic a, a -> IO ())
@@ -207,6 +224,20 @@ mkDynamic a = do
   return (Dynamic r t, \b -> do
     _ <- takeMVar r
     tr <- getTriggers t b
+    putMVar r b
+    tr
+   )
+
+mkDynamicWithFinalizer :: a -> IO () -> IO (Dynamic a, a -> IO ())
+mkDynamicWithFinalizer a f = do
+  r <- newMVar a
+  t <- newMVar []
+  wt <- mkWeakMVar t f
+  return (Dynamic r t, \b -> do
+    _ <- takeMVar r
+    tr <- deRefWeak wt >>= \mt -> case mt of
+      Nothing -> return (return ())
+      Just t' -> getTriggers t' b
     putMVar r b
     tr
    )
