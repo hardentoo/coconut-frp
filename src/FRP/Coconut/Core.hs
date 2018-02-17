@@ -21,6 +21,7 @@ import Control.Monad
 import Control.Parallel
 import Data.Functor.Identity
 import Data.IORef
+import Control.Concurrent
 import Control.Concurrent.MVar
 import System.IO.Unsafe
 import System.Mem.Weak
@@ -37,7 +38,7 @@ data Dynamic a = Dynamic (MVar a) (MVar [(IORef (), a -> IO ())])
 getTriggers :: MVar [(IORef (), a -> IO ())] -> a -> IO (IO ())
 getTriggers v x = do
   l <- readMVar v
-  return $ forM_ l $ \(_, a) -> a x
+  return $ forM_ l $ \(_, a) -> forkIO $ a x
 
 initialRef :: IO (IORef a)
 initialRef = newIORef (error "Tried to use dynamic variable before it was \
