@@ -12,6 +12,8 @@ module FRP.Coconut.Core (
   nubDynamic,
   splitDynamic,
   scatter,
+  MonadScatter(..),
+  scatterD,
   hold,
   merge
  ) where
@@ -361,9 +363,97 @@ scatter c u (Dynamic r t) = do
   putMVar r a
   return x
 
--- | Create a new 'Dynamic' object containing the current value of the argument,
--- and an 'IO' action. The new 'Dynamic' object will retain its current value,
--- but will update it whenever the accompanying 'IO' action is run.
+class Monad m0 => MonadScatter m0 where
+  scatterD2 :: forall c s .
+    (forall m d . MonadScatter m =>
+      (forall b . Dynamic b -> m b) ->
+      (forall b . b -> m (d b)) ->
+      (forall b . (forall n d1 . MonadScatter n =>
+        c d1 -> b ->
+        (forall b1 . b1 -> n (d b1)) ->
+        (forall b1 . (b1 -> b1) -> d1 b1 -> n ()) ->
+        (c d1 -> n ()) ->
+        n ()
+       ) -> Dynamic b -> m ()) ->
+      m (c d)
+     ) ->
+    m0 (Dynamic (c Dynamic))
+
+instance MonadScatter IO where
+  scatterD2 bf = do
+    r <- newEmptyMVar
+    t <- newMVar []
+    sn <- newIORef ()
+    rc <- newMVar 0
+    p <- newMVar []
+    let
+      deref = do
+        c <- takeMVar rc
+        if c <= 1
+          then do
+            rr <- takeMVar p
+            forM_ rr $ \t -> dropTrigger sn t
+            putMVar p []
+          else return ()
+        putMVar rc (c - 1)
+      addParent d = do
+        rr <- takeMVar p
+        putMVar p (d : rr)
+      ref = do
+        c <- takeMVar rc
+        putMVar rc (c + 1)
+      mkDest b = do
+        ref
+        r' <- newMVar b
+        t' <- newMVar []
+        mkWeakMVar t' deref
+        return (Dynamic r' t')
+    ref
+    wt <- mkWeakMVar t deref
+    bf pollDynamic mkDest
+      (\uf (Dynamic r' t') -> addParent t >> addTrigger sn (\v -> do
+        c1 <- takeMVar r
+        cr <- newIORef c1
+        uf c1 v mkDest (\tf (Dynamic rd td) -> do
+          v' <- takeMVar rd
+          let nv = tf v'
+          ff <- getTriggers td nv
+          putMVar rd nv
+          ff
+         ) (\cn -> do
+          writeIORef cr cn
+          join $ getTriggers t cn
+         )
+        readIORef cr >>= putMVar r
+       ) t'
+      ) >>= putMVar r
+    return (Dynamic r t)
+
+scatterD :: forall a c s m0 . MonadScatter m0 =>
+  (forall m d . MonadScatter m =>
+    (forall b . Dynamic b -> m b) ->
+    (forall b . b -> m (d b)) ->
+    (forall b . (forall n d1 . MonadScatter n =>
+      c (d1 a) -> b ->
+      (forall b1 . b1 -> n (d b1)) ->
+      (forall b1 . (b1 -> b1) -> d1 b1 -> n ()) ->
+      (c (d1 a) -> n ()) ->
+      n ()
+     ) -> Dynamic b -> m ()) ->
+    m (c (d a))
+   ) ->
+  m0 (Dynamic (c (Dynamic a)))
+scatterD bf = do
+  r <- scatterD2 (\pk mk dst -> Rank2.Flip <$> bf pk mk (\uf ud ->
+    dst (\(Rank2.Flip c0) tv mk' pok uc ->
+      uf c0 tv mk' pok (uc . Rank2.Flip)) ud
+   ))
+  return $ fmap (\(Rank2.Flip c) -> c) r
+
+-- | Create a new 'Dynamic' object containing the current value of the
+-- argument, and an 'IO' action. The new 'Dynamic' object will retain its
+-- current value, but will update it whenever the accompanying 'IO' action is
+-- run.
 hold :: Dynamic a -> IO (Dynamic a, IO ())
 hold (Dynamic r t) = do
   a <- takeMVar r
