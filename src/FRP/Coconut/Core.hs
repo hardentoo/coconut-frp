@@ -13,6 +13,7 @@ module FRP.Coconut.Core (
   splitDynamic,
   scatter,
   MonadScatter(..),
+  Sink(..),
   scatterD,
   hold,
   merge
@@ -294,10 +295,10 @@ nubDynamic (Dynamic r t) = unsafePerformIO $ do
   putMVar r a
   return (Dynamic r' t')
 
-data Sink a = Sink (MVar a) (Weak (MVar [(IORef (), a -> IO ())]))
+data Sinc a = Sinc (MVar a) (Weak (MVar [(IORef (), a -> IO ())]))
 
-sink :: IO () -> Dynamic a -> IO (Sink a)
-sink f (Dynamic r t) = Sink r <$> mkWeakMVar t f
+sink :: IO () -> Dynamic a -> IO (Sinc a)
+sink f (Dynamic r t) = Sinc r <$> mkWeakMVar t f
 
 -- | This is intended for creating a collection of 'Dynamic' objects from a
 -- single one. The first argument is used to populate the collection, the
@@ -351,7 +352,7 @@ scatter c u (Dynamic r t) = do
         else putMVar counter cv1
     return (Dynamic r' t')
   y <- Rank2.traverse (sink $ return ()) x
-  addTrigger sn (\a' -> u y a' $ \bf (Sink r' wt) -> do
+  addTrigger sn (\a' -> u y a' $ \bf (Sinc r' wt) -> do
     b0 <- takeMVar r'
     let b = bf b0
     tx <- deRefWeak wt >>= \mt -> case mt of
@@ -365,10 +366,10 @@ scatter c u (Dynamic r t) = do
 
 class Monad m0 => MonadScatter m0 where
   scatterD2 :: forall c s .
-    (forall m d . MonadScatter m =>
+    (forall m d . (MonadScatter m, Sink d) =>
       (forall b . Dynamic b -> m b) ->
       (forall b . b -> m (d b)) ->
-      (forall b . (forall n d1 . MonadScatter n =>
+      (forall b . (forall n d1 . (MonadScatter n, Sink d1) =>
         c d1 -> b ->
         (forall b1 . b1 -> n (d b1)) ->
         (forall b1 . (b1 -> n b1) -> d1 b1 -> n ()) ->
@@ -378,6 +379,12 @@ class Monad m0 => MonadScatter m0 where
       m (c d)
      ) ->
     m0 (Dynamic (c Dynamic))
+
+class Sink d where
+  getDynamic :: d a -> Dynamic a
+
+instance Sink Dynamic where
+  getDynamic = id
 
 instance MonadScatter IO where
   scatterD2 bf = do
@@ -430,10 +437,10 @@ instance MonadScatter IO where
     return (Dynamic r t)
 
 scatterD :: forall a c s m0 . MonadScatter m0 =>
-  (forall m d . MonadScatter m =>
+  (forall m d . (MonadScatter m, Sink d) =>
     (forall b . Dynamic b -> m b) ->
     (forall b . b -> m (d b)) ->
-    (forall b . (forall n d1 . MonadScatter n =>
+    (forall b . (forall n d1 . (MonadScatter n, Sink d1) =>
       c (d1 a) -> b ->
       (forall b1 . b1 -> n (d b1)) ->
       (forall b1 . (b1 -> n b1) -> d1 b1 -> n ()) ->
