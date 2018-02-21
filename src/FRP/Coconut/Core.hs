@@ -371,7 +371,7 @@ class Monad m0 => MonadScatter m0 where
       (forall b . (forall n d1 . MonadScatter n =>
         c d1 -> b ->
         (forall b1 . b1 -> n (d b1)) ->
-        (forall b1 . (b1 -> b1) -> d1 b1 -> n ()) ->
+        (forall b1 . (b1 -> n b1) -> d1 b1 -> n ()) ->
         (c d1 -> n ()) ->
         n ()
        ) -> Dynamic b -> m ()) ->
@@ -416,7 +416,7 @@ instance MonadScatter IO where
         cr <- newIORef c1
         uf c1 v mkDest (\tf (Dynamic rd td) -> do
           v' <- takeMVar rd
-          let nv = tf v'
+          nv <- tf v'
           ff <- getTriggers td nv
           putMVar rd nv
           ff
@@ -436,7 +436,7 @@ scatterD :: forall a c s m0 . MonadScatter m0 =>
     (forall b . (forall n d1 . MonadScatter n =>
       c (d1 a) -> b ->
       (forall b1 . b1 -> n (d b1)) ->
-      (forall b1 . (b1 -> b1) -> d1 b1 -> n ()) ->
+      (forall b1 . (b1 -> n b1) -> d1 b1 -> n ()) ->
       (c (d1 a) -> n ()) ->
       n ()
      ) -> Dynamic b -> m ()) ->
