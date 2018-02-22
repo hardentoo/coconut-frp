@@ -9,6 +9,8 @@ module FRP.Coconut.Core (
   mkDynamic,
   mkDynamicWithFinalizer,
   accumulator,
+  sometimes,
+  poller,
   nubDynamic,
   splitDynamic,
   scatter,
@@ -269,6 +271,55 @@ accumulator u s0 ~(Dynamic r t) = do
       putMVar r' b3
       tr
   addTrigger sn update t
+  putMVar r a0
+  return (Dynamic r' t')
+
+-- | The same as 'Accumulator', but does not necessarily update every time, and
+-- waits for the first update signal before running the update function.
+sometimes :: (s -> a -> (s,Maybe b)) -> s -> b -> Dynamic a -> IO (Dynamic b)
+sometimes u s0 b0 ~(Dynamic r t) = do
+  a0 <- takeMVar r
+  r' <- newMVar b0
+  t' <- newMVar []
+  sn <- newIORef ()
+  sr <- newMVar s0
+  wt <- mkWeakMVar t' $ do
+    dropTrigger sn t
+  let
+    update a = do
+      b2 <- takeMVar r'
+      s2 <- takeMVar sr
+      let (s3,b3') = u s2 a
+      case b3' of
+        Just b3 -> do
+          putMVar sr s3
+          tr <- deRefWeak wt >>= \mt -> case mt of
+            Nothing -> return (return ())
+            Just t0 -> getTriggers t0 b3
+          putMVar r' b3
+          tr
+        Nothing -> putMVar r' b2
+  addTrigger sn update t
+  putMVar r a0
+  return (Dynamic r' t')
+
+-- | Create a 'Dynamic' object which runs an IO action to get its new value
+-- during updates.
+poller :: Dynamic a -> (a -> IO b) -> IO (Dynamic b)
+poller (Dynamic r t) u = do
+  a0 <- takeMVar r
+  b0 <- u a0
+  r' <- newMVar b0
+  t' <- newMVar []
+  sn <- newIORef ()
+  wt <- mkWeakMVar t' $ dropTrigger sn t
+  addTrigger sn (\a -> do
+    _ <- takeMVar r'
+    b <- u a
+    tr <- getTriggers t' b
+    putMVar r' b
+    tr
+   ) t
   putMVar r a0
   return (Dynamic r' t')
 
