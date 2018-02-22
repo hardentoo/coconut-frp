@@ -8,6 +8,7 @@ module FRP.Coconut.Core (
   collectorWithFinalizer,
   mkDynamic,
   mkDynamicWithFinalizer,
+  placeHolder,
   accumulator,
   sometimes,
   poller,
@@ -246,6 +247,45 @@ mkDynamicWithFinalizer a f = do
       Nothing -> return (return ())
       Just t' -> getTriggers t' b
     putMVar r b
+    tr
+   )
+
+-- | Creates a 'Dynamic' object containing the provided initial value, and an
+-- 'IO' function to make it track the value and updates of another 'Dynamic'
+-- object. It is equivalent to:
+--
+-- > placeHolder a = do
+-- >   (d1,u) <- mkDynamic (pure a)
+-- >   return (join d1, u)
+placeHolder :: a -> IO (Dynamic a, Dynamic a -> IO ())
+placeHolder a = do
+  r <- newMVar a
+  t <- newMVar []
+  p <- newEmptyMVar
+  sn <- newIORef ()
+  wt <- mkWeakMVar t $ tryTakeMVar p >>= \mp -> case mp of
+    Nothing -> return ()
+    Just p' -> dropTrigger sn p'
+  return (Dynamic r t, \(Dynamic r' t') -> do
+    v <- takeMVar r'
+    _ <- takeMVar r
+    p' <- tryTakeMVar p
+    case p' of
+      Nothing -> return ()
+      Just t0 -> dropTrigger sn t0
+    addTrigger sn (\a -> do
+      _ <- takeMVar r
+      tr <- deRefWeak wt >>= \mt -> case mt of
+        Nothing -> return (return ())
+        Just t0 -> getTriggers t0 a
+      putMVar r a
+      tr
+     ) t'
+    tr <- deRefWeak wt >>= \mt -> case mt of
+      Nothing -> return (return ())
+      Just t0 -> getTriggers t0 v
+    putMVar r v
+    putMVar r' v
     tr
    )
 
