@@ -170,7 +170,7 @@ instance Monad Dynamic where
 
 -- | Get the value currently stored in the 'Dynamic' object.
 pollDynamic :: Dynamic a -> IO a
-pollDynamic ~(Dynamic r _) = readMVar r
+pollDynamic ~(Dynamic r t) = t `seq` readMVar r
 
 -- | Provide a handler which will be run immediately with the current value
 -- in the 'Dynamic', and again every time it updates. Returns an IO action
