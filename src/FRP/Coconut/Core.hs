@@ -11,6 +11,7 @@ module FRP.Coconut.Core (
   accumulator,
   sometimes,
   poller,
+  sometimesPoller,
   nubDynamic,
   splitDynamic,
   scatter,
