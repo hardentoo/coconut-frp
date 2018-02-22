@@ -257,8 +257,7 @@ accumulator u s0 ~(Dynamic r t) = do
   t' <- newMVar []
   sn <- newIORef ()
   sr <- newMVar s1
-  wt <- mkWeakMVar t' $ do
-    dropTrigger sn t
+  wt <- mkWeakMVar t' $ dropTrigger sn t
   let
     update a = do
       _ <- takeMVar r'
@@ -283,8 +282,7 @@ sometimes u s0 b0 ~(Dynamic r t) = do
   t' <- newMVar []
   sn <- newIORef ()
   sr <- newMVar s0
-  wt <- mkWeakMVar t' $ do
-    dropTrigger sn t
+  wt <- mkWeakMVar t' $ dropTrigger sn t
   let
     update a = do
       b2 <- takeMVar r'
@@ -298,7 +296,7 @@ sometimes u s0 b0 ~(Dynamic r t) = do
             Just t0 -> getTriggers t0 b3
           putMVar r' b3
           tr
-        Nothing -> putMVar r' b2
+        Nothing -> putMVar sr s3 >> putMVar r' b2
   addTrigger sn update t
   putMVar r a0
   return (Dynamic r' t')
@@ -320,6 +318,34 @@ poller (Dynamic r t) u = do
     putMVar r' b
     tr
    ) t
+  putMVar r a0
+  return (Dynamic r' t')
+
+-- | A version of 'sometimes' which allows IO in the update function.
+sometimesPoller ::
+  (s -> a -> IO (s,Maybe b)) -> s -> b -> Dynamic a -> IO (Dynamic b)
+sometimesPoller u s0 b0 ~(Dynamic r t) = do
+  a0 <- takeMVar r
+  r' <- newMVar b0
+  t' <- newMVar []
+  sn <- newIORef ()
+  sr <- newMVar s0
+  wt <- mkWeakMVar t' $ dropTrigger sn t
+  let
+    update a = do
+      b2 <- takeMVar r'
+      s2 <- takeMVar sr
+      (s3,b3') <- u s2 a
+      case b3' of
+        Just b3 -> do
+          putMVar sr s3
+          tr <- deRefWeak wt >>= \mt -> case mt of
+            Nothing -> return (return ())
+            Just t0 -> getTriggers t0 b3
+          putMVar r' b3
+          tr
+        Nothing -> putMVar sr s3 >> putMVar r' b2
+  addTrigger sn update t
   putMVar r a0
   return (Dynamic r' t')
 
